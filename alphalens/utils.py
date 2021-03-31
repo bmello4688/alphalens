@@ -21,7 +21,7 @@ import warnings
 from IPython.display import display
 from pandas.tseries.offsets import CustomBusinessDay, Day, BusinessDay
 from scipy.stats import mode
-
+from pandas.tseries.frequencies import to_offset
 
 class NonMatchingTimezoneError(Exception):
     pass
@@ -266,8 +266,6 @@ def compute_forward_returns(factor,
                                        "the pandas methods tz_localize and "
                                        "tz_convert.")
 
-    freq = infer_trading_calendar(factor_dateindex, prices.index)
-
     factor_dateindex = factor_dateindex.intersection(prices.index)
 
     if len(factor_dateindex) == 0:
@@ -282,6 +280,8 @@ def compute_forward_returns(factor,
 
     raw_values_dict = {}
     column_list = []
+
+    offset = infer_offset(prices.index)
 
     for period in sorted(periods):
         if cumulative_returns:
@@ -298,27 +298,7 @@ def compute_forward_returns(factor,
             ) > (filter_zscore * forward_returns.std())
             forward_returns[mask] = np.nan
 
-        #
-        # Find the period length, which will be the column name. We'll test
-        # several entries in order to find out the most likely period length
-        # (in case the user passed inconsinstent data)
-        #
-        days_diffs = []
-        for i in range(30):
-            if i >= len(forward_returns.index):
-                break
-            p_idx = prices.index.get_loc(forward_returns.index[i])
-            if p_idx is None or p_idx < 0 or (
-                    p_idx + period) >= len(prices.index):
-                continue
-            start = prices.index[p_idx]
-            end = prices.index[p_idx + period]
-            period_len = diff_custom_calendar_timedeltas(start, end, freq)
-            days_diffs.append(period_len.components.days)
-
-        delta_days = period_len.components.days - mode(days_diffs).mode[0]
-        period_len -= pd.Timedelta(days=delta_days)
-        label = timedelta_to_string(period_len)
+        label = (offset * period).freqstr
 
         column_list.append(label)
 
@@ -337,7 +317,6 @@ def compute_forward_returns(factor,
     # now set the columns correctly
     df = df[column_list]
 
-    df.index.levels[0].freq = freq
     df.index.set_names(['date', 'asset'], inplace=True)
 
     return df
@@ -912,7 +891,7 @@ def get_forward_returns_columns(columns, require_exact_day_multiple=False):
                 + " of days."
             )
     else:
-        pattern = re.compile(r"^(\d+([Dhms]|ms|us|ns]))+$", re.IGNORECASE)
+        pattern = re.compile(r"^(\d+([YMWDTms]|ms|us|ns]))+$", re.IGNORECASE)
         valid_columns = [(pattern.match(col) is not None) for col in columns]
 
     return columns[valid_columns]
@@ -991,49 +970,23 @@ def add_custom_calendar_timedelta(input, timedelta, freq):
     return input + freq * days + offset
 
 
-def diff_custom_calendar_timedeltas(start, end, freq):
+def infer_offset(datetime_index):
     """
-    Compute the difference between two pd.Timedelta taking into consideration
-    custom frequency, which is used to deal with custom calendars, such as a
-    trading calendar
+    Determine the best frequency between dates.
 
     Parameters
     ----------
-    start : pd.Timestamp
-    end : pd.Timestamp
-    freq : CustomBusinessDay (see infer_trading_calendar)
-    freq : pd.DataOffset (CustomBusinessDay, Day or BDay)
+    datetime_index : pd.DatetimeIndex
 
     Returns
     -------
-    pd.Timedelta
-        end - start
+    label: string, resolution_string: string
     """
-    if not isinstance(freq, (Day, BusinessDay, CustomBusinessDay)):
-        raise ValueError("freq must be Day, BusinessDay or CustomBusinessDay")
 
-    weekmask = getattr(freq, 'weekmask', None)
-    holidays = getattr(freq, 'holidays', None)
+    # take the min because will have variation due to trading calendar
+    time_delta = (datetime_index[1:] - datetime_index[:-1]).min()
+    offset = to_offset(time_delta)
 
-    if weekmask is None and holidays is None:
-        if isinstance(freq, Day):
-            weekmask = 'Mon Tue Wed Thu Fri Sat Sun'
-            holidays = []
-        elif isinstance(freq, BusinessDay):
-            weekmask = 'Mon Tue Wed Thu Fri'
-            holidays = []
+    return offset
 
-    if weekmask is not None and holidays is not None:
-        # we prefer this method as it is faster
-        actual_days = np.busday_count(np.array(start).astype('datetime64[D]'),
-                                      np.array(end).astype('datetime64[D]'),
-                                      weekmask, holidays)
-    else:
-        # default, it is slow
-        actual_days = pd.date_range(start, end, freq=freq).shape[0] - 1
-        if not freq.onOffset(start):
-            actual_days -= 1
 
-    timediff = end - start
-    delta_days = timediff.components.days - actual_days
-    return timediff - pd.Timedelta(days=delta_days)
