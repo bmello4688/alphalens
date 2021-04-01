@@ -289,6 +289,11 @@ def compute_forward_returns(factor,
         forward_returns = \
             returns.shift(-period).reindex(factor_dateindex)
 
+        #add ability for returns to be calculated based off of if we are long or short on the position
+        long_or_short = factor.apply(lambda x: -1 if x < 0 else 1).unstack()
+
+        forward_returns *= long_or_short
+
         if filter_zscore is not None:
             mask = abs(
                 forward_returns - forward_returns.mean()
