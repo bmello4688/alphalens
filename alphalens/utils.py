@@ -254,12 +254,9 @@ def compute_forward_returns(factor,
         (level 1), containing the forward returns for assets.
         Forward returns column names follow the format accepted by
         pd.Timedelta (e.g. '1D', '30m', '3h15m', '1D1h', etc).
-        'date' index freq property (forward_returns.index.levels[0].freq)
-        will be set to a trading calendar (pandas DateOffset) inferred
-        from the input data (see infer_trading_calendar for more details).
     """
 
-    factor_dateindex = factor.index.levels[0]
+    factor_dateindex = factor.index.get_level_values(0)
     if factor_dateindex.tz != prices.index.tz:
         raise NonMatchingTimezoneError("The timezone of 'factor' is not the "
                                        "same as the timezone of 'prices'. See "
@@ -276,7 +273,7 @@ def compute_forward_returns(factor,
     # chop prices down to only the assets we care about (= unique assets in
     # `factor`).  we could modify `prices` in place, but that might confuse
     # the caller.
-    prices = prices.filter(items=factor.index.levels[1])
+    prices = prices.filter(items=list(set(factor.index.get_level_values(1))))
 
     raw_values_dict = {}
     column_list = []
