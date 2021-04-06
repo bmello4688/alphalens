@@ -221,15 +221,12 @@ def compute_forward_returns(factor,
     """
     Finds the N period forward returns (as percent change) for each asset
     provided.
-
     Parameters
     ----------
     factor : pd.Series - MultiIndex
         A MultiIndex Series indexed by timestamp (level 0) and asset
         (level 1), containing the values for a single alpha factor.
-
         - See full explanation in utils.get_clean_factor_and_forward_returns
-
     prices : pd.DataFrame
         Pricing data to use in forward price calculation.
         Assets as columns, dates as index. Pricing data must
@@ -246,7 +243,6 @@ def compute_forward_returns(factor,
         If True, forward returns columns will contain cumulative returns.
         Setting this to False is useful if you want to analyze how predictive
         a factor is for a single forward day.
-
     Returns
     -------
     forward_returns : pd.DataFrame - MultiIndex
@@ -254,9 +250,12 @@ def compute_forward_returns(factor,
         (level 1), containing the forward returns for assets.
         Forward returns column names follow the format accepted by
         pd.Timedelta (e.g. '1D', '30m', '3h15m', '1D1h', etc).
+        'date' index freq property (forward_returns.index.levels[0].freq)
+        will be set to a trading calendar (pandas DateOffset) inferred
+        from the input data (see infer_trading_calendar for more details).
     """
 
-    factor_dateindex = factor.index.get_level_values(0)
+    factor_dateindex = factor.index.levels[0]
     if factor_dateindex.tz != prices.index.tz:
         raise NonMatchingTimezoneError("The timezone of 'factor' is not the "
                                        "same as the timezone of 'prices'. See "
@@ -273,12 +272,10 @@ def compute_forward_returns(factor,
     # chop prices down to only the assets we care about (= unique assets in
     # `factor`).  we could modify `prices` in place, but that might confuse
     # the caller.
-    prices = prices.filter(items=list(set(factor.index.get_level_values(1))))
+    prices = prices.filter(items=factor.index.levels[1])
 
     raw_values_dict = {}
     column_list = []
-
-    offset = infer_offset(prices.index)
 
     for period in sorted(periods):
         if cumulative_returns:
@@ -295,7 +292,7 @@ def compute_forward_returns(factor,
             ) > (filter_zscore * forward_returns.std())
             forward_returns[mask] = np.nan
 
-        label = (offset * period).freqstr
+        label = get_period_length_label(forward_returns, prices, period)
 
         column_list.append(label)
 
@@ -887,8 +884,9 @@ def get_forward_returns_columns(columns, require_exact_day_multiple=False):
                 "Skipping return periods that aren't exact multiples"
                 + " of days."
             )
+            
     else:
-        pattern = re.compile(r"^(\d+([YMWDTms]|ms|us|ns]))+$", re.IGNORECASE)
+        pattern = re.compile(r"^(\d+([YMWDhTms]|ms|us|ns]))+$", re.IGNORECASE)
         valid_columns = [(pattern.match(col) is not None) for col in columns]
 
     return columns[valid_columns]
@@ -967,9 +965,11 @@ def add_custom_calendar_timedelta(input, timedelta, freq):
     return input + freq * days + offset
 
 
-def infer_offset(datetime_index):
+def get_period_length_label(forward_returns, prices, period):
     """
-    Determine the best frequency between dates.
+    Find the period length, which will be the column name. We'll test
+    several entries in order to find out the most likely period length
+    (in case the user passed inconsinstent data)
 
     Parameters
     ----------
@@ -980,10 +980,21 @@ def infer_offset(datetime_index):
     label: string, resolution_string: string
     """
 
-    # take the min because will have variation due to trading calendar
-    time_delta = (datetime_index[1:] - datetime_index[:-1]).min()
-    offset = to_offset(time_delta)
-
-    return offset
+    days_diffs = []
+    for i in range(30):
+        if i >= len(forward_returns.index):
+            break
+        p_idx = prices.index.get_loc(forward_returns.index[i])
+        if p_idx is None or p_idx < 0 or (
+                p_idx + period) >= len(prices.index):
+            continue
+        start = prices.index[p_idx]
+        end = prices.index[p_idx + period]
+        period_len = end - start
+        days_diffs.append(period_len.components.days)
+    delta_days = period_len.components.days - mode(days_diffs).mode[0]
+    period_len -= pd.Timedelta(days=delta_days)
+    label = timedelta_to_string(period_len)
+    return label
 
 
